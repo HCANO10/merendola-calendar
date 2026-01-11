@@ -8,6 +8,8 @@ interface StoreContextType {
   state: AppState;
   session: Session | null;
   authLoading: boolean;
+  loadError: boolean;
+  fetchUserData: (userId: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<{ error: any }>;
   signIn: (email: string, password: string) => Promise<{ data: any, error: any }>;
   signOut: () => Promise<{ error: any }>;
@@ -51,12 +53,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { ...initialState, teamMembers: MOCK_TEAM_MEMBERS };
   });
 
+  const [loadError, setLoadError] = useState(false);
+
   const fetchUserData = useCallback(async (userId: string) => {
     // Safety timeout to avoid infinite loading
     const timeoutId = setTimeout(() => {
       setAuthLoading(false);
+      setLoadError(true);
       console.warn('fetchUserData timed out after 10s');
     }, 10000);
+
+    setLoadError(false);
 
     try {
       // 1. Get Profile
@@ -66,16 +73,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         .eq('user_id', userId)
         .single();
 
-      if (profileError && profileError.code !== 'PGRST116') {
-        console.error('Error fetching profile:', profileError);
-        setAuthLoading(false);
-        return;
-      }
-
-      // If no profile, we can't do much (it should exist on trigger or be created)
-      if (!profile) {
-        console.error('Profile not found for user:', userId);
-        setAuthLoading(false);
+      if (profileError) {
+        if (profileError.code !== 'PGRST116') {
+          console.error('Error fetching profile:', profileError);
+          setLoadError(true);
+          return;
+        }
+        // If profile doesn't exist, we'll stop here (it should be handled by trigger)
+        console.error('Profile not found for userId:', userId);
+        setLoadError(true);
         return;
       }
 
@@ -89,9 +95,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         activeTeamId: profile.active_team_id
       };
 
-      // Check for incomplete profile (Required BIRTHDAY and EMAIL)
-      const isProfileIncomplete = !user.birthday || !user.name;
-
       let team = null;
       let teamMembers: User[] = [];
       let snacks: Snack[] = [];
@@ -99,8 +102,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       // 2. Get Active Team Data
       if (profile.active_team_id) {
-        const { data: teamData } = await supabase.from('teams').select('*').eq('id', profile.active_team_id).single();
-        if (teamData) {
+        const { data: teamData, error: teamError } = await supabase
+          .from('teams')
+          .select('*')
+          .eq('id', profile.active_team_id)
+          .single();
+
+        if (teamError) {
+          console.error('Error fetching team:', teamError);
+          // Don't mark as loadError entirely, maybe team was deleted
+        } else if (teamData) {
           team = {
             id: teamData.id,
             name: teamData.name,
@@ -109,12 +120,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           };
 
           // 3. Get Members
-          const { data: membersData } = await supabase
+          const { data: membersData, error: membersError } = await supabase
             .from('memberships')
             .select('user_id, profiles(display_name, birthday, avatar_url, notification_email, active_team_id)')
             .eq('team_id', profile.active_team_id);
 
-          if (membersData) {
+          if (membersError) {
+            console.error('Error fetching members:', membersError);
+          } else if (membersData) {
             teamMembers = membersData.map((m: any) => ({
               id: m.user_id,
               email: '',
@@ -127,7 +140,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }
 
           // 4. Get Merendolas (RLS filtered)
-          const { data: snacksData } = await supabase
+          const { data: snacksData, error: snacksError } = await supabase
             .from('merendolas')
             .select(`
               *,
@@ -136,7 +149,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             `)
             .eq('team_id', profile.active_team_id);
 
-          if (snacksData) {
+          if (snacksError) {
+            console.error('Error fetching snacks:', snacksError);
+          } else if (snacksData) {
             snacks = snacksData.map((s: any) => {
               s.attendees?.forEach((a: any) => {
                 invites.push({
@@ -175,7 +190,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }));
 
     } catch (error) {
-      console.error('Error in fetchUserData:', error);
+      console.error('Fatal error in fetchUserData:', error);
+      setLoadError(true);
     } finally {
       clearTimeout(timeoutId);
       setAuthLoading(false);
@@ -394,7 +410,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   return (
     <StoreContext.Provider value={{
-      state, session, authLoading, signUp, signIn, signOut, resetPasswordForEmail, updateUser, setTeam, addSnack, editSnack, deleteSnack, toggleAttendance, respondToInvite, markNotificationRead, addComment
+      state, session, authLoading, loadError, fetchUserData, signUp, signIn, signOut, resetPasswordForEmail, updateUser, createTeam, joinTeam, setTeam, addSnack, editSnack, deleteSnack, toggleAttendance, respondToInvite, markNotificationRead, addComment
     }}>
       {children}
     </StoreContext.Provider>

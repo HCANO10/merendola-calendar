@@ -21,6 +21,10 @@ const SignIn: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
 
+  // Login Fix States
+  const [showResendButton, setShowResendButton] = useState(false);
+  const [timeoutError, setTimeoutError] = useState(false);
+
   useEffect(() => {
     // 1. Detect recovery mode from hash or route
     const isRecoveryPath = location.pathname === '/reset-password' || window.location.hash.includes('type=recovery');
@@ -90,7 +94,19 @@ const SignIn: React.FC = () => {
       showToast('Por favor, rellena todos los campos.');
       return;
     }
+
     setLoading(true);
+    setShowResendButton(false);
+    setTimeoutError(false);
+
+    // 8s anti-stuck timeout
+    const timer = setTimeout(() => {
+      if (loading) {
+        setTimeoutError(true);
+        setLoading(false);
+        showToast('La conexión está tardando demasiado. Reintenta.', 'error');
+      }
+    }, 8000);
 
     try {
       if (isSignUp) {
@@ -99,12 +115,13 @@ const SignIn: React.FC = () => {
         showToast('¡Registro iniciado! Revisa tu email para confirmar tu cuenta.', 'success');
         setIsSignUp(false);
       } else {
-        const { error } = await signIn(email, password);
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) {
           if (error.message.includes('Invalid login credentials')) {
             showToast('Correo o contraseña incorrectos.');
           } else if (error.message.includes('Email not confirmed')) {
-            showToast('Tu correo no está confirmado. Revisa tu buzón de entrada.');
+            showToast('Tu correo no está confirmado. Revisa tu email.', 'error');
+            setShowResendButton(true);
           } else if (error.message.includes('too many requests')) {
             showToast('Demasiados intentos. Espera unos minutos.');
           } else {
@@ -112,10 +129,37 @@ const SignIn: React.FC = () => {
           }
           return;
         }
+
+        // Success: the navigate logic will happen via App.tsx auth state detection
+        // but we can help it if needed:
+        showToast('¡Sesión iniciada!', 'success');
+        navigate('/dashboard');
       }
     } catch (err: any) {
       console.error('Login error:', err);
       showToast('No se pudo completar la acción. Inténtalo de nuevo.');
+    } finally {
+      clearTimeout(timer);
+      setLoading(false);
+    }
+  };
+
+  const handleResendConfirmation = async () => {
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/#/`
+        }
+      });
+      if (error) throw error;
+      showToast('Te hemos reenviado el email de confirmación.', 'success');
+      setShowResendButton(false);
+    } catch (err: any) {
+      console.error('Resend error:', err);
+      showToast('No se pudo enviar el correo. Reintenta en un momento.');
     } finally {
       setLoading(false);
     }
@@ -231,6 +275,31 @@ const SignIn: React.FC = () => {
                 ) : null}
                 <span>{isSignUp ? 'Registrarse' : UI_TEXT.SIGN_IN.CONTINUE}</span>
               </button>
+
+              {showResendButton && (
+                <button
+                  type="button"
+                  onClick={handleResendConfirmation}
+                  className="w-full flex items-center justify-center gap-2 text-sm font-bold text-primary hover:underline mt-2 p-2"
+                >
+                  <span className="material-symbols-outlined text-lg">forward_to_inbox</span>
+                  Reenviar email de confirmación
+                </button>
+              )}
+
+              {timeoutError && (
+                <div className="mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-center animate-in fade-in duration-300">
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200 mb-2">
+                    La respuesta está tardando más de lo normal.
+                  </p>
+                  <button
+                    onClick={handleSubmit as any}
+                    className="text-xs font-bold uppercase tracking-wider text-amber-900 dark:text-amber-100 underline decoration-2 underline-offset-4"
+                  >
+                    Intentar de nuevo ahora
+                  </button>
+                </div>
+              )}
 
               <p className="text-center text-[#60798a] dark:text-[#a0b3c1] text-xs mt-6 cursor-pointer hover:underline" onClick={() => setIsSignUp(!isSignUp)}>
                 {isSignUp ? '¿Ya tienes cuenta? Inicia sesión' : UI_TEXT.SIGN_IN.NO_ACCOUNT}
